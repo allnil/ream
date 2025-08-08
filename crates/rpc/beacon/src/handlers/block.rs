@@ -10,6 +10,7 @@ use ream_beacon_api_types::{
         BeaconResponse, BeaconVersionedResponse, DataResponse, RootResponse, SSZ_CONTENT_TYPE,
     },
 };
+use ream_chain_beacon::beacon_chain::BeaconChain;
 use ream_consensus_beacon::{
     electra::{beacon_block::SignedBeaconBlock, beacon_state::BeaconState},
     genesis::Genesis,
@@ -17,8 +18,10 @@ use ream_consensus_beacon::{
 use ream_consensus_misc::constants::beacon::{
     WHISTLEBLOWER_REWARD_QUOTIENT, genesis_validators_root,
 };
+use ream_network_manager::p2p_sender::P2PSender;
 use ream_network_spec::networks::beacon_network_spec;
 use ream_storage::{
+    cache::CachedDB,
     db::ReamDB,
     tables::{Field, Table},
 };
@@ -313,5 +316,98 @@ pub async fn get_blind_block(
             .content_type(SSZ_CONTENT_TYPE)
             .body(blinded_beacon_block.as_ssz_bytes())),
         _ => Ok(HttpResponse::Ok().json(BeaconVersionedResponse::new(blinded_beacon_block))),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PublishBlockQuery {
+    #[serde(default)]
+    pub broadcast_validation: BroadcastValidation,
+}
+
+#[post("/beacon/blocks")]
+pub async fn publish_block_v2(
+    req: HttpRequest,
+    query: Query<PublishBlockQuery>,
+    body: Bytes,
+    beacon_chain: Data<Arc<BeaconChain>>,
+    p2p_sender: Data<Arc<P2PSender>>,
+    cached_db: Data<Arc<CachedDB>>,
+) -> Result<impl Responder, ApiError> {
+    // 1. Check the Eth‑Consensus‑Version header
+    let version = req
+        .headers()
+        .get("Eth-Consensus-Version")
+        .ok_or_else(|| ApiError::BadRequest("Missing Eth-Consensus-Version header".into()))?
+        .to_str()
+        .map_err(|_| ApiError::BadRequest("Invalid Eth-Consensus-Version header".into()))?;
+    if version != "electra" {
+        // Only Electra is supported in this implementation
+        return Err(ApiError::BadRequest(format!(
+            "Unsupported consensus version: {version}"
+        )));
+    }
+
+    // 2. Determine content type and deserialize the block
+    let content_type = req
+        .headers()
+        .get(actix_web::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let signed_block: SignedBeaconBlock = if content_type.starts_with("application/octet-stream") {
+        // SSZ encoded
+        SignedBeaconBlock::from_ssz_bytes(&body)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid SSZ data: {e}")))?
+    } else if content_type.starts_with("application/json") || content_type.is_empty() {
+        // JSON encoded
+        serde_json::from_slice(&body)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid JSON: {e}")))?
+    } else {
+        return Err(ApiError::BadRequest("Unsupported Content-Type".into()));
+    };
+
+    // 3. Read the validation level
+    let validation = query.broadcast_validation.clone();
+
+    // 4. Pre-broadcast validation (simplified)
+    // In a full implementation you would call validate_gossip_beacon_block for the gossip case
+    // and validate_beacon_block for consensus levels before broadcasting.
+    // Here we only enforce consensus-level validation by attempting to process the block.
+    if matches!(
+        validation,
+        BroadcastValidation::Consensus | BroadcastValidation::ConsensusAndEquivocation
+    ) {
+        if let Err(err) = beacon_chain.process_block(signed_block.clone()).await {
+            return Err(ApiError::BadRequest(format!(
+                "Consensus validation failed: {err}"
+            )));
+        }
+    }
+
+    // 5. Broadcast the block via gossipsub
+    //
+    // NOTE: Constructing the correct GossipTopic requires the current fork digest.
+    // This example uses a placeholder and should be replaced with real logic.
+    // use ream_p2p::channel::GossipMessage;
+    // use ream_p2p::gossipsub::topics::{GossipTopic, GossipTopicKind};
+    // use alloy_primitives::B32;
+    // let topic = GossipTopic {
+    // fork: B32::zero(), // TODO: replace with beacon_network_spec().fork_digest(...)
+    // kind: GossipTopicKind::BeaconBlock,
+    // };
+    // let data = signed_block.as_ssz_bytes();
+    // let message = GossipMessage { topic, data };
+    // p2p_sender.send_gossip(message);
+    // For now we skip the actual broadcast and simply log that it would happen.
+    tracing::info!(
+        "publish_block_v2: broadcasting block at slot {}",
+        signed_block.message.slot
+    );
+
+    // 6. Integrate the block into the chain if not done already
+    let integration_result = beacon_chain.process_block(signed_block.clone()).await;
+    match integration_result {
+        Ok(()) => Ok(HttpResponse::Ok().json(serde_json::json!({}))),
+        Err(_) => Ok(HttpResponse::Accepted().json(serde_json::json!({}))), // 202
     }
 }

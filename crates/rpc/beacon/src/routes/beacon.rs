@@ -64,5 +64,6 @@ pub fn register_beacon_routes(cfg: &mut ServiceConfig) {
 
 pub fn register_beacon_routes_v2(cfg: &mut ServiceConfig) {
     cfg.service(get_block_attestations)
-        .service(get_block_from_id);
+        .service(get_block_from_id)
+        .service(publish_block_v2);
 }

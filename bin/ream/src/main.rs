@@ -244,6 +244,10 @@ pub async fn run_beacon_node(config: BeaconNodeConfig, executor: ReamExecutor) {
 
     let execution_engine = network_manager.beacon_chain.execution_engine.clone();
 
+    let beacon_chain = network_manager.beacon_chain.clone();
+    let p2p_sender = Arc::new(network_manager.p2p_sender.clone());
+    let cached_db = Arc::new(CachedDB::default());
+
     let network_future = executor.spawn(async move {
         network_manager.start().await;
     });
@@ -255,6 +259,9 @@ pub async fn run_beacon_node(config: BeaconNodeConfig, executor: ReamExecutor) {
             network_state,
             operation_pool,
             execution_engine,
+            beacon_chain,
+            p2p_sender,
+            cached_db,
         )
         .await
     });

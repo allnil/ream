@@ -2,10 +2,12 @@ use std::sync::Arc;
 
 use actix_web::{App, HttpServer, dev::ServerHandle, middleware, web::Data};
 use config::RpcServerConfig;
+use ream_chain_beacon::beacon_chain::BeaconChain;
 use ream_execution_engine::ExecutionEngine;
+use ream_network_manager::p2p_sender::P2PSender;
 use ream_operation_pool::OperationPool;
 use ream_p2p::network_state::NetworkState;
-use ream_storage::db::ReamDB;
+use ream_storage::{cache::CachedDB, db::ReamDB};
 use tracing::info;
 
 use crate::routes::register_routers;
@@ -21,6 +23,9 @@ pub async fn start_server(
     network_state: Arc<NetworkState>,
     operation_pool: Arc<OperationPool>,
     execution_engine: Option<ExecutionEngine>,
+    beacon_chain: Arc<BeaconChain>,
+    p2p_sender: Arc<P2PSender>,
+    cached_db: Arc<CachedDB>,
 ) -> std::io::Result<()> {
     info!(
         "starting HTTP server on {:?}",
@@ -38,6 +43,9 @@ pub async fn start_server(
             .app_data(Data::new(network_state.clone()))
             .app_data(Data::new(operation_pool.clone()))
             .app_data(Data::new(execution_engine.clone()))
+            .app_data(Data::new(beacon_chain.clone()))
+            .app_data(Data::new(p2p_sender.clone()))
+            .app_data(Data::new(cached_db.clone()))
             .configure(register_routers)
     })
     .bind(server_config.http_socket_address)?

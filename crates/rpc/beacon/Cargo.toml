@@ -40,3 +40,5 @@ ream-node.workspace = true
 ream-operation-pool.workspace = true
 ream-p2p.workspace = true
 ream-storage.workspace = true
+ream-network-manager.workspace = true
+ream-chain-beacon.workspace = true
